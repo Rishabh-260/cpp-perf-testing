@@ -1,0 +1,64 @@
+name: C++ performance benchmarks
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Select revisions
+        id: revisions
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "baseline=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            baseline="${{ github.event.before }}"
+            if [[ "$baseline" =~ ^0+$ ]]; then
+              echo "run=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "baseline=$baseline" >> "$GITHUB_OUTPUT"
+              echo "run=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          echo "candidate=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - name: Explain initial revision
+        if: steps.revisions.outputs.run == 'false'
+        run: echo 'No prior commit is available for comparison on this initial push.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Compare performance
+        if: steps.revisions.outputs.run == 'true'
+        id: compare
+        shell: bash
+        run: |
+          set +e
+          python -m perfbench.cli compare \
+            --repo . \
+            --baseline "${{ steps.revisions.outputs.baseline }}" \
+            --candidate "${{ steps.revisions.outputs.candidate }}" \
+            --runs 5 \
+            --threshold 5 \
+            --report-dir reports
+          result=$?
+          if [[ -f reports/report.md ]]; then
+            cat reports/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$result"
+      - name: Upload benchmark reports
+        if: always() && steps.revisions.outputs.run == 'true' && hashFiles('reports/report.*') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-report
+          path: reports/report.*
